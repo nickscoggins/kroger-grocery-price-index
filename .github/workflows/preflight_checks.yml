@@ -1,0 +1,32 @@
+name: Preflight Checks (DB + Kroger)
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install psycopg[binary] requests
+
+      - name: DB smoke test
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: python .github/scripts/db_test.py
+
+      - name: Kroger token test
+        env:
+          KROGER_CLIENT_ID: ${{ secrets.KROGER_CLIENT_ID }}
+          KROGER_CLIENT_SECRET: ${{ secrets.KROGER_CLIENT_SECRET }}
+        run: python .github/scripts/kroger_test.py
