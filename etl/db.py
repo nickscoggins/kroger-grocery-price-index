@@ -3,7 +3,6 @@ import psycopg
 from contextlib import contextmanager
 
 # NEW: bulk insert helper
-from psycopg.extras import execute_values
 from psycopg.types.json import Json
 
 DB_URL = os.environ["SUPABASE_DB_URL"]
@@ -39,13 +38,13 @@ def read_products(conn):
 def upsert_prices(conn, rows):
     """
     rows: list of dicts with keys:
-      location_id, upc, price_date, regular_price, promo_price, currency, price_source, raw_payload (JSON-able)
-    Uses execute_values for fast, pipeline-safe bulk upsert.
+      location_id, upc, price_date, regular_price, promo_price, currency, price_source, raw_payload
+    Performs chunked multi-values INSERT ... ON CONFLICT using psycopg3 (no extras).
     """
     if not rows:
         return
 
-    # Build list of tuples for VALUES
+    # Convert dicts -> tuples in the right column order
     data = [
         (
             r["location_id"],
@@ -55,16 +54,15 @@ def upsert_prices(conn, rows):
             r["promo_price"],
             r.get("currency", "USD"),
             r.get("price_source", "kroger_api"),
-            # wrap as Json to send as jsonb cleanly (handles dict/str)
-            Json(r["raw_payload"] if isinstance(r["raw_payload"], (dict, list)) else r["raw_payload"])
+            Json(r["raw_payload"] if isinstance(r["raw_payload"], (dict, list)) else r["raw_payload"]),
         )
         for r in rows
     ]
 
-    sql = """
+    base_sql = """
     INSERT INTO daily_prices
       (location_id, upc, price_date, regular_price, promo_price, currency, price_source, raw_payload)
-    VALUES %s
+    VALUES {values_clause}
     ON CONFLICT (location_id, upc, price_date) DO UPDATE
       SET regular_price = EXCLUDED.regular_price,
           promo_price   = EXCLUDED.promo_price,
@@ -73,11 +71,19 @@ def upsert_prices(conn, rows):
           raw_payload   = EXCLUDED.raw_payload
     """
 
-    # Chunk very large batches to keep statement size reasonable
-    CHUNK = 1000
+    # Build a single VALUES list with (%s,...) placeholders repeated per row
+    def exec_chunk(cur, chunk):
+        placeholders = "(" + ",".join(["%s"] * 8) + ")"
+        values_clause = ",".join([placeholders] * len(chunk))
+        params = []
+        for row in chunk:
+            params.extend(row)
+        cur.execute(base_sql.format(values_clause=values_clause), params)
+
+    CHUNK = 500  # keep statements a reasonable size
     with conn.cursor() as cur:
         for i in range(0, len(data), CHUNK):
-            execute_values(cur, sql, data[i:i+CHUNK], page_size=CHUNK)
+            exec_chunk(cur, data[i:i+CHUNK])
 
 def log_request(conn, op, target, status_code, ok, message):
     with conn.cursor() as cur:
