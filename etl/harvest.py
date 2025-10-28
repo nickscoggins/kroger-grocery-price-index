@@ -103,6 +103,11 @@ def main():
     price_date = today_et()
     info(f"[ETL] Starting harvest for {price_date}")
 
+    # NEW: temp safety switches
+    store_limit = int(os.environ.get("STORE_LIMIT", "0")) or None
+    stop_after_requests = int(os.environ.get("STOP_AFTER_REQUESTS", "0")) or None
+    dry_run = os.environ.get("DRY_RUN") == "1"
+
     token, token_type = get_token()
     info("[ETL] Got access token")
 
@@ -110,24 +115,27 @@ def main():
         stores = read_stores(conn)            # list of location_id
         prod_rows = read_products(conn)       # list of (upc, description)
 
+    if store_limit:
+        stores = stores[:store_limit]
+        info(f"[ETL] STORE_LIMIT active → {len(stores)} stores will be processed")
+
     # 3-day product sharding
     bucket_today = (price_date.toordinal() % 3)
     upcs_today = [u for (u, _desc) in prod_rows if upc_day_bucket(u) == bucket_today]
-    info(f"[ETL] Products in today’s bucket: {len(upcs_today)} of {len(prod_rows)} total (~{round(len(upcs_today)/max(1,len(prod_rows))*100,1)}%)")
+    calls_per_store = math.ceil(len(upcs_today)/49) if upcs_today else 0
+    info(f"[ETL] Today’s bucket: {len(upcs_today)} UPCs; ~{calls_per_store} calls/store")
 
-    # Loop stores; per store, call ~ceil(len(upcs_today)/49) times
     total_requests = 0
     total_upserts  = 0
 
     for i, loc in enumerate(stores, 1):
-        # Respect a soft cap if desired (optional)
-        # if total_requests > 9000: break
+        if stop_after_requests and total_requests >= stop_after_requests:
+            info(f"[ETL] STOP_AFTER_REQUESTS hit ({total_requests}); ending early")
+            break
 
-        # Pull in batches
         pulled = fetch_store_prices_for_upcs(token, loc, upcs_today)
         total_requests += math.ceil(len(upcs_today)/49)
 
-        # Transform rows to DB upsert format
         to_upsert = []
         for (upc, regular, promo, raw) in pulled:
             if not upc:
@@ -137,25 +145,23 @@ def main():
                 "upc": upc,
                 "price_date": price_date,
                 "regular_price": regular if regular is None or isinstance(regular, (int, float)) else float(regular),
-                "promo_price": promo if promo is None or isinstance(promo, (int, float)) else float(promo),
+                "promo_price":   promo   if promo   is None or isinstance(promo,   (int, float)) else float(promo),
                 "currency": "USD",
                 "price_source": "kroger_api",
                 "raw_payload": json.dumps(raw),
             })
 
-        # Upsert into DB
-        if to_upsert:
+        if to_upsert and not dry_run:
             with get_conn() as conn:
                 upsert_prices(conn, to_upsert)
                 total_upserts += len(to_upsert)
 
-        if i % 100 == 0:
-            info(f"[ETL] {i}/{len(stores)} stores processed... (requests so far ~{total_requests}, rows upserted {total_upserts})")
+        if i % 50 == 0:
+            info(f"[ETL] {i}/{len(stores)} stores | ~requests: {total_requests} | upserts: {total_upserts}")
 
-        # Friendly tiny sleep to avoid spiky traffic (tune as needed)
-        time.sleep(0.05)
+        time.sleep(0.05)  # gentle pacing
 
-    info(f"[ETL] Done. Stores: {len(stores)} | Est. requests: ~{total_requests} | Rows upserted: {total_upserts}")
+    info(f"[ETL] Done. Stores: {min(len(stores), store_limit or len(stores))} | Est. requests: ~{total_requests} | Rows upserted: {total_upserts} | Dry-run={dry_run}")
 
 if __name__ == "__main__":
     main()
