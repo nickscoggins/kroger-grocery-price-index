@@ -22,11 +22,12 @@ def read_stores(conn):
 def read_products(conn):
     with conn.cursor() as cur:
         cur.execute("""
-            select upc, coalesce(description, '')
+            select upc, pid, coalesce(description, '')
             from products
+            where pid is not null and pid <> ''
             order by upc
         """)
-        return cur.fetchall()  # list of (upc, description)
+        return cur.fetchall()  # list of (upc, pid, description)
 
 def upsert_prices(conn, rows):
     """
