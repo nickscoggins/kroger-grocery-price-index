@@ -28,9 +28,6 @@ jobs:
           KROGER_CLIENT_SECRET: ${{ secrets.KROGER_CLIENT_SECRET }}
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           LOG_LEVEL: ${{ secrets.LOG_LEVEL || 'INFO' }}
-          STORE_LIMIT: "10"
-          STOP_AFTER_REQUESTS: "100"
-          DRY_RUN: "0"
         run: |
           python -m etl.harvest
 
