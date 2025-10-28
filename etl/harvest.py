@@ -242,7 +242,7 @@ def main() -> None:
                 upsert_prices(conn, to_upsert)
                 total_upserts += len(to_upsert)
 
-        if i % 50 == 0:
+        if i % 1 == 0:
             info(f"[ETL] {i}/{len(stores)} stores | ~requests so far: {total_requests} | rows upserted: {total_upserts}")
 
         # Gentle pacing; adjust if needed
