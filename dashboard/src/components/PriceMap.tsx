@@ -11,7 +11,7 @@ import {
 import L from "leaflet";
 
 export interface StorePoint {
-  location_id: number;
+  location_id: string;
   name: string;
   chain: string | null;
   city: string | null;

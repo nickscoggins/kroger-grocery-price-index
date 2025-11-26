@@ -12,7 +12,7 @@ interface Product {
 }
 
 interface StorePriceRow {
-  location_id: number;
+  location_id: string;
   regular_price: number | null;
   promo_price: number | null;
   price_date: string;
@@ -75,7 +75,7 @@ function App() {
         const allData = results.flatMap((res) => res.data ?? []);
 
         // Optional: de-duplicate by location_id (in case of overlaps)
-        const byId = new Map<number, StorePoint>();
+        const byId = new Map<string, StorePoint>();
         for (const row of allData as StorePoint[]) {
           byId.set(row.location_id, row);
         }
@@ -148,7 +148,7 @@ function App() {
       }
 
       const rows = (data ?? []) as {
-        location_id: number;
+        location_id: string;
         price_date: string;
         regular_price: number | null;
         promo_price: number | null;
@@ -156,7 +156,7 @@ function App() {
 
       // latest_prices should already be one row per (location_id, upc),
       // but we keep the same StorePriceRow shape for the rest of the code.
-      const latestByLocation = new Map<number, StorePriceRow>();
+      const latestByLocation = new Map<string, StorePriceRow>();
       for (const r of rows) {
         latestByLocation.set(r.location_id, {
           location_id: r.location_id,
@@ -215,7 +215,7 @@ function App() {
       }));
     }
 
-    const priceByLocation = new Map<number, StorePriceRow>();
+    const priceByLocation = new Map<string, StorePriceRow>();
     productPrices.forEach((p) => {
       priceByLocation.set(p.location_id, p);
     });
