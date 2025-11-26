@@ -3,7 +3,6 @@ import { supabase } from "./lib/supabaseClient";
 import { PriceMap } from "./components/PriceMap";
 import type { StorePoint } from "./components/PriceMap";
 
-// Product type for products table
 interface Product {
   upc: string;
   description: string | null;
@@ -12,7 +11,7 @@ interface Product {
 }
 
 interface StorePriceRow {
-  location_id: string;
+  location_id: string; // string to match DB
   regular_price: number | null;
   promo_price: number | null;
   price_date: string;
@@ -28,7 +27,7 @@ function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
   // Filter state
-  const [selectedProductUpc, setSelectedProductUpc] = useState<string>("");
+  const [selectedProductUpc, setSelectedProductUpc] = useState<string>(""); // default: no product selected
   const [selectedState, setSelectedState] = useState<string>("ALL");
   const [selectedChain, setSelectedChain] = useState<string>("ALL");
 
@@ -36,30 +35,34 @@ function App() {
   const [productPrices, setProductPrices] = useState<StorePriceRow[]>([]);
   const [loadingPrices, setLoadingPrices] = useState(false);
 
+  // Hover tooltip state for price markers on the scale
+  const [hoverPriceInfo, setHoverPriceInfo] = useState<{
+    price: number;
+    count: number;
+    position: number; // 0–100 (% along the scale)
+  } | null>(null);
+
   const handleClearFilters = () => {
     setSelectedState("ALL");
     setSelectedChain("ALL");
-
-    if (products.length > 0) {
-      setSelectedProductUpc(products[0].upc);
-    } else {
-      setSelectedProductUpc("");
-    }
+    setSelectedProductUpc(""); // reset to no product selected
   };
 
-  // --- Fetch STORES once on mount ---
+  // Clear tooltip when product or filters change
+  useEffect(() => {
+    setHoverPriceInfo(null);
+  }, [selectedProductUpc, selectedState, selectedChain]);
+
+  // --- Fetch STORES (with paging to avoid 1000-row cap) ---
   useEffect(() => {
     async function fetchStores() {
       setLoadingStores(true);
 
-      // Supabase/PostgREST usually caps at 1000 rows per request,
-      // so we fetch in chunks and merge.
       const pageSize = 1000;
-
       const ranges: [number, number][] = [
-        [0, pageSize - 1],           // 0–999
-        [pageSize, 2 * pageSize - 1],// 1000–1999
-        [2 * pageSize, 3 * pageSize - 1], // 2000–2999 (enough to cover 2,866)
+        [0, pageSize - 1],
+        [pageSize, 2 * pageSize - 1],
+        [2 * pageSize, 3 * pageSize - 1],
       ];
 
       try {
@@ -74,14 +77,12 @@ function App() {
 
         const allData = results.flatMap((res) => res.data ?? []);
 
-        // Optional: de-duplicate by location_id (in case of overlaps)
         const byId = new Map<string, StorePoint>();
         for (const row of allData as StorePoint[]) {
           byId.set(row.location_id, row);
         }
 
         const uniqueStores = Array.from(byId.values());
-
         setStores(uniqueStores);
       } catch (e) {
         console.error("Error fetching stores:", e);
@@ -110,11 +111,7 @@ function App() {
       } else {
         const productData = (data ?? []) as Product[];
         setProducts(productData);
-
-        // Optionally auto-select first product
-        if (productData.length > 0) {
-          setSelectedProductUpc(productData[0].upc);
-        }
+        // NOTE: we leave selectedProductUpc as "" (no default product)
       }
 
       setLoadingProducts(false);
@@ -123,10 +120,10 @@ function App() {
     fetchProducts();
   }, []);
 
-
-  // --- Fetch latest prices per store for the selected product ---
+  // --- Fetch latest prices per store for the selected product (from latest_prices) ---
   useEffect(() => {
     async function fetchPricesForProduct() {
+      // If no product selected, clear prices and skip
       if (!selectedProductUpc) {
         setProductPrices([]);
         return;
@@ -134,46 +131,57 @@ function App() {
 
       setLoadingPrices(true);
 
-      const { data, error } = await supabase
-        .from("latest_prices")
-        .select("location_id, price_date, regular_price, promo_price")
-        .eq("upc", selectedProductUpc)
-        .limit(5000); // more than enough for 2,866 stores
+      const pageSize = 1000;
+      const ranges: [number, number][] = [
+        [0, pageSize - 1], // 0–999
+        [pageSize, 2 * pageSize - 1], // 1000–1999
+        [2 * pageSize, 3 * pageSize - 1], // 2000–2999
+      ];
 
-      if (error) {
-        console.error("Error fetching prices for product:", error);
+      try {
+        const results = await Promise.all(
+          ranges.map(([from, to]) =>
+            supabase
+              .from("latest_prices")
+              .select("location_id, price_date, regular_price, promo_price")
+              .eq("upc", selectedProductUpc)
+              .range(from, to)
+          )
+        );
+
+        const allRows = results.flatMap((res) => res.data ?? []) as {
+          location_id: string;
+          price_date: string;
+          regular_price: number | null;
+          promo_price: number | null;
+        }[];
+
+        const latestByLocation = new Map<string, StorePriceRow>();
+
+        // latest_prices should already be 1 row per (location_id, upc),
+        // but we de-duplicate by location_id just in case.
+        for (const r of allRows) {
+          if (!latestByLocation.has(r.location_id)) {
+            latestByLocation.set(r.location_id, {
+              location_id: r.location_id,
+              price_date: r.price_date,
+              regular_price: r.regular_price,
+              promo_price: r.promo_price,
+            });
+          }
+        }
+
+        setProductPrices(Array.from(latestByLocation.values()));
+      } catch (e) {
+        console.error("Error fetching prices for product:", e);
         setProductPrices([]);
+      } finally {
         setLoadingPrices(false);
-        return;
       }
-
-      const rows = (data ?? []) as {
-        location_id: string;
-        price_date: string;
-        regular_price: number | null;
-        promo_price: number | null;
-      }[];
-
-      // latest_prices should already be one row per (location_id, upc),
-      // but we keep the same StorePriceRow shape for the rest of the code.
-      const latestByLocation = new Map<string, StorePriceRow>();
-      for (const r of rows) {
-        latestByLocation.set(r.location_id, {
-          location_id: r.location_id,
-          price_date: r.price_date,
-          regular_price: r.regular_price,
-          promo_price: r.promo_price,
-        });
-      }
-
-      setProductPrices(Array.from(latestByLocation.values()));
-      setLoadingPrices(false);
     }
 
     fetchPricesForProduct();
   }, [selectedProductUpc]);
-
-
 
   // --- Derive unique states and chains from stores for filter dropdowns ---
   const uniqueStates = useMemo(() => {
@@ -206,7 +214,7 @@ function App() {
   // --- Attach prices to filtered stores ---
   const storesWithPrice = useMemo(() => {
     if (productPrices.length === 0) {
-      // No prices fetched yet or no data for this product
+      // Either no product selected or no price data for this product
       return filteredStores.map((s) => ({
         ...s,
         regular_price: null as number | null,
@@ -231,17 +239,83 @@ function App() {
     });
   }, [filteredStores, productPrices]);
 
+  // --- Final set of stores to show on the map ---
+  const storesForMap = useMemo(() => {
+    // If no product selected: show all filtered stores (even without price)
+    if (!selectedProductUpc) {
+      return storesWithPrice;
+    }
+
+    // If a product is selected: only show stores that have a price
+    return storesWithPrice.filter(
+      (s) =>
+        typeof s.promo_price === "number" ||
+        typeof s.regular_price === "number"
+    );
+  }, [storesWithPrice, selectedProductUpc]);
+
+  // --- Price stats (min/median/max/mean + distribution of unique prices) ---
+  const priceStats = useMemo(() => {
+    if (!selectedProductUpc) return null;
+
+    const values: number[] = [];
+    const countsMap = new Map<number, number>(); // price -> count
+
+    for (const s of storesForMap) {
+      const base =
+        typeof s.promo_price === "number"
+          ? s.promo_price
+          : typeof s.regular_price === "number"
+          ? s.regular_price
+          : null;
+
+      if (base !== null) {
+        // Round to 2 decimal places to avoid tiny float differences
+        const price = Math.round(base * 100) / 100;
+        values.push(price);
+        countsMap.set(price, (countsMap.get(price) ?? 0) + 1);
+      }
+    }
+
+    if (values.length === 0) return null;
+
+    values.sort((a, b) => a - b);
+    const min = values[0];
+    const max = values[values.length - 1];
+    const mid = Math.floor(values.length / 2);
+    const median =
+      values.length % 2 === 1
+        ? values[mid]
+        : (values[mid - 1] + values[mid]) / 2;
+
+    const sum = values.reduce((acc, v) => acc + v, 0);
+    const mean = sum / values.length;
+
+    const distribution = Array.from(countsMap.entries())
+      .map(([price, count]) => ({ price, count }))
+      .sort((a, b) => a.price - b.price);
+
+    return {
+      min,
+      median,
+      max,
+      mean,
+      count: values.length,
+      distribution,
+    };
+  }, [storesForMap, selectedProductUpc]);
 
   return (
     <div
       style={{
         display: "flex",
-        height: "100vh", // fullscreen app
-        width: "100vw", // span full viewport width
+        height: "100vh", // lock app height to viewport
+        width: "100vw",
+        overflow: "hidden", // prevent page from growing taller than viewport
         fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
       }}
     >
-      {/* Side panel (conditionally rendered) */}
+      {/* Side panel (scrollable) */}
       {isSidebarOpen && (
         <div
           style={{
@@ -254,6 +328,8 @@ function App() {
             backgroundColor: "#fafafa",
             display: "flex",
             flexDirection: "column",
+            height: "100%", // fill parent height
+            overflowY: "auto", // make sidebar scrollable
           }}
         >
           <h1 style={{ fontSize: "1.25rem", marginBottom: "0.5rem" }}>
@@ -276,21 +352,30 @@ function App() {
               <p>Loading stores…</p>
             ) : (
               <p style={{ margin: 0 }}>
-                Stores loaded: {stores.length} (showing {filteredStores.length}{" "}
+                Stores loaded: {stores.length} (showing {storesForMap.length}{" "}
                 after filters)
               </p>
             )}
             {loadingProducts ? (
               <p>Loading products…</p>
             ) : (
-              <p style={{ margin: 0 }}>
-                Products loaded: {products.length}
+              <p style={{ margin: 0 }}>Products loaded: {products.length}</p>
+            )}
+            {selectedProductUpc ? (
+              <p style={{ margin: 0, fontSize: "0.8rem", color: "#777" }}>
+                {loadingPrices
+                  ? "Loading prices for selected product…"
+                  : `Price rows loaded: ${productPrices.length}`}
+              </p>
+            ) : (
+              <p style={{ margin: 0, fontSize: "0.8rem", color: "#777" }}>
+                No product selected — showing all stores.
               </p>
             )}
           </div>
 
           {/* Product selector */}
-          <div style={{ marginBottom: "1rem" }}>
+          <div style={{ marginBottom: "0.75rem" }}>
             <label
               style={{
                 display: "block",
@@ -314,6 +399,10 @@ function App() {
                   fontSize: "0.9rem",
                 }}
               >
+                {/* No-product option */}
+                <option value="">
+                  (No product selected – show all stores)
+                </option>
                 {products.map((p) => (
                   <option key={p.upc} value={p.upc}>
                     {p.brand ? `${p.brand} – ` : ""}
@@ -322,10 +411,144 @@ function App() {
                 ))}
               </select>
             )}
-            <p style={{ margin: "0.25rem 0 0", fontSize: "0.8rem", color: "#777" }}>
-              (Price & color-coding will use this selection in the next step.)
-            </p>
           </div>
+
+          {/* Price summary card for selected product */}
+          {selectedProductUpc && priceStats && (
+            <div
+              style={{
+                marginBottom: "1rem",
+                padding: "0.75rem",
+                borderRadius: "6px",
+                border: "1px solid #ddd",
+                backgroundColor: "#fff",
+                fontSize: "0.85rem",
+                color: "#444",
+              }}
+            >
+              <div
+                style={{
+                  fontWeight: 600,
+                  marginBottom: "0.25rem",
+                }}
+              >
+                Price summary (selected product)
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  marginBottom: "0.4rem",
+                }}
+              >
+                <span>Min: ${priceStats.min.toFixed(2)}</span>
+                <span>Median: ${priceStats.median.toFixed(2)}</span>
+                <span>Max: ${priceStats.max.toFixed(2)}</span>
+              </div>
+
+              {/* Gradient bar + interactive price markers */}
+              <div
+                style={{
+                  position: "relative",
+                  marginBottom: "0.25rem",
+                  paddingTop: "4px", // little padding to give markers room
+                }}
+              >
+                {/* Gradient bar matching map color scale */}
+                <div
+                  style={{
+                    height: "10px",
+                    borderRadius: "999px",
+                    background:
+                      "linear-gradient(to right, #2ecc71, #e67e22, #e74c3c)",
+                  }}
+                />
+
+                {/* Unique price markers overlaid on the bar */}
+                {priceStats.distribution.map((bucket) => {
+                  if (priceStats.max === priceStats.min) {
+                    // Avoid divide-by-zero if all prices are identical
+                    return null;
+                  }
+
+                  const t =
+                    (bucket.price - priceStats.min) /
+                    (priceStats.max - priceStats.min);
+                  const position = Math.max(0, Math.min(1, t)) * 100;
+
+                  return (
+                    <div
+                      key={bucket.price}
+                      onMouseEnter={() =>
+                        setHoverPriceInfo({
+                          price: bucket.price,
+                          count: bucket.count,
+                          position,
+                        })
+                      }
+                      onMouseLeave={() => setHoverPriceInfo(null)}
+                      style={{
+                        position: "absolute",
+                        bottom: 0,
+                        left: `${position}%`,
+                        transform: "translateX(-50%)",
+                        width: "2px",
+                        height: "14px",
+                        backgroundColor: "rgba(0, 0, 0, 0.65)",
+                        cursor: "pointer",
+                      }}
+                    />
+                  );
+                })}
+
+                {/* Tooltip for hovered price marker */}
+                {hoverPriceInfo && priceStats.max !== priceStats.min && (
+                  <div
+                    style={{
+                      position: "absolute",
+                      bottom: "20px",
+                      left: `${hoverPriceInfo.position}%`,
+                      transform: "translateX(-50%)",
+                      padding: "2px 6px",
+                      borderRadius: "4px",
+                      backgroundColor: "rgba(0, 0, 0, 0.8)",
+                      color: "#fff",
+                      fontSize: "0.7rem",
+                      whiteSpace: "nowrap",
+                      pointerEvents: "none",
+                      zIndex: 10,
+                    }}
+                  >
+                    ${hoverPriceInfo.price.toFixed(2)} –{" "}
+                    {hoverPriceInfo.count} store
+                    {hoverPriceInfo.count === 1 ? "" : "s"}
+                  </div>
+                )}
+              </div>
+
+              {/* Average (mean) value centered below scale */}
+              <div
+                style={{
+                  textAlign: "center",
+                  fontSize: "0.75rem",
+                  color: "#555",
+                  marginBottom: "0.2rem",
+                }}
+              >
+                Avg: ${priceStats.mean.toFixed(2)}
+              </div>
+
+              <div
+                style={{
+                  marginTop: "0.15rem",
+                  fontSize: "0.75rem",
+                  color: "#777",
+                }}
+              >
+                Based on {priceStats.count} stores with prices.
+              </div>
+            </div>
+          )}
 
           {/* Location filters */}
           <div style={{ marginBottom: "1rem" }}>
@@ -414,17 +637,27 @@ function App() {
               color: "#777",
             }}
           >
-            Next up:
+            Pins are color-coded by price for the selected product:
             <ul style={{ margin: "0.25rem 0 0 1.1rem", padding: 0 }}>
-              <li>Show price data in store popups</li>
-              <li>Color-code pins by price for selected product</li>
+              <li>Green = lower price</li>
+              <li>Red = higher price</li>
+              <li>
+                No product selected = all stores, neutral blue pins/clusters.
+              </li>
             </ul>
           </div>
         </div>
       )}
 
       {/* Main map area */}
-      <div style={{ flex: 1, position: "relative" }}>
+      <div
+        style={{
+          flex: 1,
+          position: "relative",
+          height: "100%", // fill parent height
+          overflow: "hidden",
+        }}
+      >
         {/* Toggle button overlay */}
         <button
           onClick={() => setIsSidebarOpen((prev) => !prev)}
@@ -448,7 +681,7 @@ function App() {
           <div
             style={{
               display: "flex",
-              height: "100vh",
+              height: "100%", // match container height
               alignItems: "center",
               justifyContent: "center",
             }}
@@ -456,7 +689,7 @@ function App() {
             <p>Loading map…</p>
           </div>
         ) : (
-          <PriceMap stores={storesWithPrice} />
+          <PriceMap stores={storesForMap} />
         )}
       </div>
     </div>

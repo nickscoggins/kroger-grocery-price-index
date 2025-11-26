@@ -11,7 +11,7 @@ import {
 import L from "leaflet";
 
 export interface StorePoint {
-  location_id: string;
+  location_id: string; // string, not number
   name: string;
   chain: string | null;
   city: string | null;
@@ -64,13 +64,13 @@ interface Cluster {
 }
 
 // Create a circular DivIcon for clusters
-function makeClusterIcon(count: number): L.DivIcon {
+function makeClusterIcon(count: number, color: string): L.DivIcon {
   // Size grows with count but is capped
   const size = Math.min(70, 26 + Math.sqrt(count) * 7.5);
 
   const html = `
     <div style="
-      background: rgba(0, 123, 255, 0.9);
+      background: ${color};
       border-radius: 50%;
       width: ${size}px;
       height: ${size}px;
@@ -95,7 +95,7 @@ function makeClusterIcon(count: number): L.DivIcon {
 }
 
 // Marker for a cluster: circular icon with count, zooms in on click (no popup)
-function ClusterMarker({ cluster }: { cluster: Cluster }) {
+function ClusterMarker({ cluster, color }: { cluster: Cluster; color: string }) {
   const map = useMap();
   const count = cluster.stores.length;
 
@@ -108,7 +108,7 @@ function ClusterMarker({ cluster }: { cluster: Cluster }) {
   return (
     <Marker
       position={[cluster.lat, cluster.lng]}
-      icon={makeClusterIcon(count)}
+      icon={makeClusterIcon(count, color)}
       eventHandlers={{ click: handleClick }}
     />
   );
@@ -140,9 +140,21 @@ function lerpColor(startHex: string, endHex: string, t: number): string {
 }
 
 export function PriceMap({ stores }: PriceMapProps) {
-  // Filter out stores with missing coordinates
+  // Filter out stores with missing coordinates and non-contiguous US (keep only lower 48)
   const points = useMemo(
-    () => stores.filter((s) => s.latitude !== null && s.longitude !== null),
+    () =>
+      stores.filter((s) => {
+        if (s.latitude === null || s.longitude === null) return false;
+        const lat = s.latitude as number;
+        const lng = s.longitude as number;
+
+        // Contiguous US rough bounding box:
+        // Lat: 24–50 N, Lon: -125 to -66 W
+        if (lat < 24 || lat > 50) return false;
+        if (lng < -125 || lng > -66) return false;
+
+        return true;
+      }),
     [stores]
   );
 
@@ -170,7 +182,7 @@ export function PriceMap({ stores }: PriceMapProps) {
     };
   }, [points]);
 
-  // Map price to a color from green (low) to red (high)
+  // Map price to a color from green (low) to red (high) for individual stores
   function getPriceColor(store: StorePoint): string {
     const basePrice =
       typeof store.promo_price === "number"
@@ -194,8 +206,43 @@ export function PriceMap({ stores }: PriceMapProps) {
     return lerpColor("#2ecc71", "#e74c3c", t);
   }
 
+  // Map a cluster (many stores) to a color based on avg price of its stores
+  function getClusterColor(cluster: Cluster): string {
+    if (
+      priceRange.min === null ||
+      priceRange.max === null ||
+      priceRange.max === priceRange.min
+    ) {
+      return "#007bff";
+    }
+
+    let sum = 0;
+    let count = 0;
+
+    for (const s of cluster.stores) {
+      const basePrice =
+        typeof s.promo_price === "number"
+          ? s.promo_price
+          : typeof s.regular_price === "number"
+          ? s.regular_price
+          : null;
+      if (basePrice !== null) {
+        sum += basePrice;
+        count += 1;
+      }
+    }
+
+    if (count === 0) {
+      return "#007bff";
+    }
+
+    const avg = sum / count;
+    const t = (avg - priceRange.min) / (priceRange.max - priceRange.min);
+    return lerpColor("#2ecc71", "#e74c3c", t);
+  }
+
   // Decide when to show clusters vs. individual points.
-  // We'll cluster when zoomed OUT (zoom < 11), and show individuals when zoomed IN (zoom >= 11).
+  // We'll cluster when zoomed OUT (zoom < 9), and show individuals when zoomed IN (zoom >= 9).
   const { clusters, individualPoints } = useMemo(() => {
     if (points.length === 0) {
       return {
@@ -204,7 +251,7 @@ export function PriceMap({ stores }: PriceMapProps) {
       };
     }
 
-    if (zoom >= 11) {
+    if (zoom >= 9) {
       // Zoomed in enough: show individual stores only
       return {
         clusters: [] as Cluster[],
@@ -215,12 +262,14 @@ export function PriceMap({ stores }: PriceMapProps) {
     // Zoomed out: cluster stores into grid cells
     // Grid size depends on zoom: more coarse when zoomed out further
     let gridSize: number;
-    if (zoom <= 4) {
-      gridSize = 6; // very coarse at national view
+    if (zoom <= 3) {
+      gridSize = 10; // very coarse at national view (fewer clusters, less overlap)
+    } else if (zoom <= 5) {
+      gridSize = 5; // medium
     } else if (zoom <= 7) {
-      gridSize = 3.5; // medium
+      gridSize = 2; // finer as we zoom in
     } else {
-      gridSize = 1.5; // finer as we zoom in
+      gridSize = 1; // near state-level
     }
 
     const clusterMap = new Map<string, Cluster>();
@@ -283,7 +332,11 @@ export function PriceMap({ stores }: PriceMapProps) {
 
         {/* Cluster markers when zoomed out */}
         {clusters.map((cluster, idx) => (
-          <ClusterMarker key={`cluster-${idx}`} cluster={cluster} />
+          <ClusterMarker
+            key={`cluster-${idx}`}
+            cluster={cluster}
+            color={getClusterColor(cluster)}
+          />
         ))}
 
         {/* Individual store markers when zoomed in */}
