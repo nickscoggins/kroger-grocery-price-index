@@ -75,7 +75,7 @@ function App() {
             supabase
               .from("stores")
               .select(
-                "location_id, name, chain, city, state, latitude, longitude, census_region, census_division"
+                "location_id, name, chain, city, state, zip, latitude, longitude, census_region, census_division"
               )
               .range(from, to)
           )

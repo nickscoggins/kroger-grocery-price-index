@@ -16,10 +16,11 @@ export interface StorePoint {
   chain: string | null;
   city: string | null;
   state: string | null;
+  zip?: string | null;
   latitude: number | null;
   longitude: number | null;
 
-  // New fields from Supabase
+  // Geography fields (used in popups / filters, not clustering now)
   census_region?: string | null;
   census_division?: string | null;
 
@@ -35,7 +36,8 @@ interface PriceMapProps {
 
 // Default view (rough center of continental US)
 const DEFAULT_CENTER: [number, number] = [39.8283, -98.5795];
-const DEFAULT_ZOOM = 4;
+// Start slightly zoomed in so US fills the screen nicely
+const DEFAULT_ZOOM = 5;
 
 // Helper component to track zoom changes and expose the map instance
 function ZoomTracker({
@@ -104,7 +106,8 @@ function ClusterMarker({ cluster, color }: { cluster: Cluster; color: string }) 
 
   const handleClick = () => {
     const currentZoom = map.getZoom();
-    const targetZoom = Math.min(13, currentZoom + 2); // zoom in a bit more, cap at 13
+    // Reasonable jump; Leaflet will still use its normal zoom step (≈1)
+    const targetZoom = Math.min(13, currentZoom + 1.5);
     map.setView([cluster.lat, cluster.lng], targetZoom);
   };
 
@@ -244,8 +247,7 @@ export function PriceMap({ stores }: PriceMapProps) {
     return lerpColor("#2ecc71", "#e74c3c", t);
   }
 
-  // Decide when to show clusters vs. individual points.
-  // We'll cluster when zoomed OUT (zoom < 9), and show individuals when zoomed IN (zoom >= 9).
+  // Grid-based clustering: coarser grid when zoomed out, finer when zoomed in
   const { clusters, individualPoints } = useMemo(() => {
     if (points.length === 0) {
       return {
@@ -254,25 +256,25 @@ export function PriceMap({ stores }: PriceMapProps) {
       };
     }
 
+    // When zoomed in enough, show individual stores only
     if (zoom >= 9) {
-      // Zoomed in enough: show individual stores only
       return {
         clusters: [] as Cluster[],
         individualPoints: points,
       };
     }
 
-    // Zoomed out: cluster stores into grid cells
-    // Grid size depends on zoom: more coarse when zoomed out further
+    // Otherwise, cluster stores into grid cells
+    // Coarser grid when zoomed out -> more clustering
     let gridSize: number;
-    if (zoom <= 3) {
-      gridSize = 10; // very coarse at national view (fewer clusters, less overlap)
-    } else if (zoom <= 5) {
-      gridSize = 5; // medium
-    } else if (zoom <= 7) {
-      gridSize = 2; // finer as we zoom in
+    if (zoom <= 4) {
+      gridSize = 8;  // very coarse at national view
+    } else if (zoom <= 6) {
+      gridSize = 4;  // medium
+    } else if (zoom <= 8) {
+      gridSize = 2;  // finer as we zoom in
     } else {
-      gridSize = 1; // near state-level
+      gridSize = 1;  // near state-level
     }
 
     const clusterMap = new Map<string, Cluster>();
@@ -301,9 +303,9 @@ export function PriceMap({ stores }: PriceMapProps) {
       }
     }
 
-    const clusters = Array.from(clusterMap.values());
+    const clusterList = Array.from(clusterMap.values());
     return {
-      clusters,
+      clusters: clusterList,
       individualPoints: [] as StorePoint[],
     };
   }, [points, zoom]);
@@ -322,7 +324,7 @@ export function PriceMap({ stores }: PriceMapProps) {
     <div style={{ position: "relative", height: "100vh", width: "100%" }}>
       <MapContainer
         center={DEFAULT_CENTER}
-        zoom={zoom}
+        zoom={DEFAULT_ZOOM}
         style={{ height: "100%", width: "100%" }}
       >
         {/* Track zoom changes & get map instance */}
@@ -364,7 +366,7 @@ export function PriceMap({ stores }: PriceMapProps) {
                     <br />
                   </>
                 )}
-                {s.city}, {s.state}
+                {s.city}, {s.state} {s.zip && <> {s.zip}</>}
                 <br />
                 Location ID: {s.location_id}
                 <br />
