@@ -28,6 +28,8 @@ function App() {
 
   // Filter state
   const [selectedProductUpc, setSelectedProductUpc] = useState<string>(""); // default: no product selected
+  const [selectedRegion, setSelectedRegion] = useState<string>("ALL");
+  const [selectedDivision, setSelectedDivision] = useState<string>("ALL");
   const [selectedState, setSelectedState] = useState<string>("ALL");
   const [selectedChain, setSelectedChain] = useState<string>("ALL");
 
@@ -43,6 +45,8 @@ function App() {
   } | null>(null);
 
   const handleClearFilters = () => {
+    setSelectedRegion("ALL");
+    setSelectedDivision("ALL");
     setSelectedState("ALL");
     setSelectedChain("ALL");
     setSelectedProductUpc(""); // reset to no product selected
@@ -51,7 +55,7 @@ function App() {
   // Clear tooltip when product or filters change
   useEffect(() => {
     setHoverPriceInfo(null);
-  }, [selectedProductUpc, selectedState, selectedChain]);
+  }, [selectedProductUpc, selectedRegion, selectedDivision, selectedState, selectedChain]);
 
   // --- Fetch STORES (with paging to avoid 1000-row cap) ---
   useEffect(() => {
@@ -70,7 +74,9 @@ function App() {
           ranges.map(([from, to]) =>
             supabase
               .from("stores")
-              .select("location_id, name, chain, city, state, latitude, longitude")
+              .select(
+                "location_id, name, chain, city, state, latitude, longitude, census_region, census_division"
+              )
               .range(from, to)
           )
         );
@@ -111,7 +117,6 @@ function App() {
       } else {
         const productData = (data ?? []) as Product[];
         setProducts(productData);
-        // NOTE: we leave selectedProductUpc as "" (no default product)
       }
 
       setLoadingProducts(false);
@@ -158,8 +163,6 @@ function App() {
 
         const latestByLocation = new Map<string, StorePriceRow>();
 
-        // latest_prices should already be 1 row per (location_id, upc),
-        // but we de-duplicate by location_id just in case.
         for (const r of allRows) {
           if (!latestByLocation.has(r.location_id)) {
             latestByLocation.set(r.location_id, {
@@ -183,7 +186,23 @@ function App() {
     fetchPricesForProduct();
   }, [selectedProductUpc]);
 
-  // --- Derive unique states and chains from stores for filter dropdowns ---
+  // --- Derive unique regions, divisions, states, chains from stores for filter dropdowns ---
+  const uniqueRegions = useMemo(() => {
+    const set = new Set<string>();
+    stores.forEach((s) => {
+      if (s.census_region) set.add(s.census_region);
+    });
+    return Array.from(set).sort();
+  }, [stores]);
+
+  const uniqueDivisions = useMemo(() => {
+    const set = new Set<string>();
+    stores.forEach((s) => {
+      if (s.census_division) set.add(s.census_division);
+    });
+    return Array.from(set).sort();
+  }, [stores]);
+
   const uniqueStates = useMemo(() => {
     const set = new Set<string>();
     stores.forEach((s) => {
@@ -203,13 +222,17 @@ function App() {
   // --- Apply location filters to stores for the map ---
   const filteredStores = useMemo(() => {
     return stores.filter((s) => {
+      const matchesRegion =
+        selectedRegion === "ALL" || s.census_region === selectedRegion;
+      const matchesDivision =
+        selectedDivision === "ALL" || s.census_division === selectedDivision;
       const matchesState =
         selectedState === "ALL" || s.state === selectedState;
       const matchesChain =
         selectedChain === "ALL" || s.chain === selectedChain;
-      return matchesState && matchesChain;
+      return matchesRegion && matchesDivision && matchesState && matchesChain;
     });
-  }, [stores, selectedState, selectedChain]);
+  }, [stores, selectedRegion, selectedDivision, selectedState, selectedChain]);
 
   // --- Attach prices to filtered stores ---
   const storesWithPrice = useMemo(() => {
@@ -270,7 +293,7 @@ function App() {
           : null;
 
       if (base !== null) {
-        // Round to 2 decimal places to avoid tiny float differences
+        // Round to 2 decimals to avoid tiny float differences
         const price = Math.round(base * 100) / 100;
         values.push(price);
         countsMap.set(price, (countsMap.get(price) ?? 0) + 1);
@@ -311,7 +334,7 @@ function App() {
         display: "flex",
         height: "100vh", // lock app height to viewport
         width: "100vw",
-        overflow: "hidden", // prevent page from growing taller than viewport
+        overflow: "hidden",
         fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
       }}
     >
@@ -328,8 +351,8 @@ function App() {
             backgroundColor: "#fafafa",
             display: "flex",
             flexDirection: "column",
-            height: "100%", // fill parent height
-            overflowY: "auto", // make sidebar scrollable
+            height: "100%",
+            overflowY: "auto",
           }}
         >
           <h1 style={{ fontSize: "1.25rem", marginBottom: "0.5rem" }}>
@@ -399,7 +422,6 @@ function App() {
                   fontSize: "0.9rem",
                 }}
               >
-                {/* No-product option */}
                 <option value="">
                   (No product selected – show all stores)
                 </option>
@@ -451,10 +473,9 @@ function App() {
                 style={{
                   position: "relative",
                   marginBottom: "0.25rem",
-                  paddingTop: "4px", // little padding to give markers room
+                  paddingTop: "4px",
                 }}
               >
-                {/* Gradient bar matching map color scale */}
                 <div
                   style={{
                     height: "10px",
@@ -464,10 +485,8 @@ function App() {
                   }}
                 />
 
-                {/* Unique price markers overlaid on the bar */}
                 {priceStats.distribution.map((bucket) => {
                   if (priceStats.max === priceStats.min) {
-                    // Avoid divide-by-zero if all prices are identical
                     return null;
                   }
 
@@ -501,7 +520,6 @@ function App() {
                   );
                 })}
 
-                {/* Tooltip for hovered price marker */}
                 {hoverPriceInfo && priceStats.max !== priceStats.min && (
                   <div
                     style={{
@@ -526,7 +544,6 @@ function App() {
                 )}
               </div>
 
-              {/* Average (mean) value centered below scale */}
               <div
                 style={{
                   textAlign: "center",
@@ -550,8 +567,70 @@ function App() {
             </div>
           )}
 
-          {/* Location filters */}
-          <div style={{ marginBottom: "1rem" }}>
+          {/* Region filter */}
+          <div style={{ marginBottom: "0.75rem" }}>
+            <label
+              style={{
+                display: "block",
+                marginBottom: "0.25rem",
+                fontWeight: 500,
+              }}
+            >
+              Census Region
+            </label>
+            <select
+              value={selectedRegion}
+              onChange={(e) => setSelectedRegion(e.target.value)}
+              style={{
+                width: "100%",
+                padding: "0.4rem 0.6rem",
+                borderRadius: "4px",
+                border: "1px solid #ccc",
+                fontSize: "0.9rem",
+              }}
+            >
+              <option value="ALL">All regions</option>
+              {uniqueRegions.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Division filter */}
+          <div style={{ marginBottom: "0.75rem" }}>
+            <label
+              style={{
+                display: "block",
+                marginBottom: "0.25rem",
+                fontWeight: 500,
+              }}
+            >
+              Census Division
+            </label>
+            <select
+              value={selectedDivision}
+              onChange={(e) => setSelectedDivision(e.target.value)}
+              style={{
+                width: "100%",
+                padding: "0.4rem 0.6rem",
+                borderRadius: "4px",
+                border: "1px solid #ccc",
+                fontSize: "0.9rem",
+              }}
+            >
+              <option value="ALL">All divisions</option>
+              {uniqueDivisions.map((d) => (
+                <option key={d} value={d}>
+                  {d}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* State filter */}
+          <div style={{ marginBottom: "0.75rem" }}>
             <label
               style={{
                 display: "block",
@@ -581,6 +660,7 @@ function App() {
             </select>
           </div>
 
+          {/* Chain filter */}
           <div style={{ marginBottom: "1rem" }}>
             <label
               style={{
@@ -654,11 +734,10 @@ function App() {
         style={{
           flex: 1,
           position: "relative",
-          height: "100%", // fill parent height
+          height: "100%",
           overflow: "hidden",
         }}
       >
-        {/* Toggle button overlay */}
         <button
           onClick={() => setIsSidebarOpen((prev) => !prev)}
           style={{
@@ -681,7 +760,7 @@ function App() {
           <div
             style={{
               display: "flex",
-              height: "100%", // match container height
+              height: "100%",
               alignItems: "center",
               justifyContent: "center",
             }}

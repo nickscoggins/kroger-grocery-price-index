@@ -19,6 +19,10 @@ export interface StorePoint {
   latitude: number | null;
   longitude: number | null;
 
+  // New fields from Supabase
+  census_region?: string | null;
+  census_division?: string | null;
+
   // Optional price fields (attached in App.tsx)
   regular_price?: number | null;
   promo_price?: number | null;
@@ -97,7 +101,6 @@ function makeClusterIcon(count: number, color: string): L.DivIcon {
 // Marker for a cluster: circular icon with count, zooms in on click (no popup)
 function ClusterMarker({ cluster, color }: { cluster: Cluster; color: string }) {
   const map = useMap();
-  const count = cluster.stores.length;
 
   const handleClick = () => {
     const currentZoom = map.getZoom();
@@ -108,7 +111,7 @@ function ClusterMarker({ cluster, color }: { cluster: Cluster; color: string }) 
   return (
     <Marker
       position={[cluster.lat, cluster.lng]}
-      icon={makeClusterIcon(count, color)}
+      icon={makeClusterIcon(cluster.stores.length, color)}
       eventHandlers={{ click: handleClick }}
     />
   );
@@ -365,6 +368,18 @@ export function PriceMap({ stores }: PriceMapProps) {
                 <br />
                 Location ID: {s.location_id}
                 <br />
+                {s.census_region && (
+                  <>
+                    Region: {s.census_region}
+                    <br />
+                  </>
+                )}
+                {s.census_division && (
+                  <>
+                    Division: {s.census_division}
+                    <br />
+                  </>
+                )}
                 {typeof s.promo_price === "number" ||
                 typeof s.regular_price === "number" ? (
                   <>
