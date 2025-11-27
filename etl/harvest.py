@@ -193,7 +193,7 @@ def main():
     total_requests = 0
     total_upserts = 0
 
-    for i, (loc, kroger_location_id) in enumerate(stores, start=1):
+    for i, (loc, location_id) in enumerate(stores, start=1):
         # build pairs of (pid, upc) for this store
         # we don't need description here
         pid_upc_pairs = [(pid, upc) for (upc, pid) in selected_products if pid]
@@ -204,7 +204,7 @@ def main():
 
         # fetch prices for this store's product cohort
         try:
-            pulled = fetch_store_prices_for_pids(tm, kroger_location_id, pid_upc_pairs)
+            pulled = fetch_store_prices_for_pids(tm, location_id, pid_upc_pairs)
         except Exception as exc:
             info(f"[ERROR] Failed to fetch prices for store={loc}: {exc}")
             with get_conn() as conn:
